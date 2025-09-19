@@ -1,5 +1,6 @@
 # Dipendenze del progetto OpenAI Fine-tuning
-openai>=1.0.0
+# Versione recente dell'SDK OpenAI con supporto a `responses` API
+openai>=1.40.0
 python-dotenv>=1.0.0
 
 # Opzionali per sviluppo
