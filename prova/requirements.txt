@@ -1,6 +1,0 @@
-# Dipendenze del progetto OpenAI Fine-tuning
-openai>=1.0.0
-python-dotenv>=1.0.0
-
-# Opzionali per sviluppo
-requests>=2.31.0
