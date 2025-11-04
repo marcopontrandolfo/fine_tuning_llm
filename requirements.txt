@@ -5,3 +5,11 @@ python-dotenv>=1.0.0
 
 # Opzionali per sviluppo
 requests>=2.31.0
+
+# Memoria e utilità
+redis>=5.0.1
+pydantic>=2.6.0
+
+# Database utils
+mysql-connector-python>=8.3.0
+Faker>=25.0.0

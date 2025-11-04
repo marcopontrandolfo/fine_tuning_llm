@@ -1,72 +1,96 @@
-# OpenAI Fine-Tuning Project
+# Fine-tuning GPT-4.1 mini per SQL su Northwind
 
-Progetto per sperimentare con l'API di OpenAI e il fine-tuning di modelli.
+Questo progetto supporta due modalità:
+- Prompting ("context FT"): semplice prompting con regole + schema nel system prompt e (opzionale) K-shot.
+ Fine-tuning: addestra un modello derivato da `gpt-4.1-mini` sui tuoi esempi.
+  - `fine_tune.py`: carica il dataset e avvia il job di fine-tuning su `gpt-4.1-mini`
+  - `prompt_infer.py`: inference solo prompting (system+schema+K-shot) su `gpt-4.1-mini`
+- `dataset/`
+  - `northwind_incontext_examples.jsonl`: esempi utente → SQL (uno per riga)
+ crea un job di fine-tuning su `gpt-4.1-mini`
+If `.ft_state.json` non è presente o non contiene `fine_tuned_model`, lo script usa il modello base `gpt-4.1-mini`.
+- `scripts/`
+  - `prepare_ft_dataset.py`: genera `dataset/northwind_ft_train.jsonl` nel formato richiesto dal fine-tuning chat
+  - `fine_tune.py`: carica il dataset e avvia il job di fine-tuning su `gpt-4.1-mini`
+  - `inference.py`: interroga il modello fine-tunato (o il base) e stampa la SQL
+  - `extract_schema_from_sql.py`: estrae tabelle/colonne/foreign keys da `dataset/northwind.sql` e genera `dataset/northwind_schema_canonical.json`
+  - `prompt_utils.py`: funzioni condivise per costruire i messaggi e normalizzare SQL
+  - `prompt_infer.py`: inference solo prompting (system+schema+K-shot) su `gpt-4.1-mini`
+  - `evaluate_prompting.py`: valuta la qualità del prompting sugli esempi (accuracy exact-match)
+- `requirements.txt`: dipendenze Python
 
-## 📁 Struttura del Progetto
+## Requisiti
+- Python 3.9+
+- Chiave OpenAI valida (`OPENAI_API_KEY`)
 
-- `fine_tuning_prova.py` - Script principale per API testing e fine-tuning
-- `simulatore_api.py` - Simulatore per testare senza consumare crediti
-- `monitor_fine_tune.py` - Script per monitorare job di fine-tuning
-- `dataset_fixed.jsonl` - Dataset in formato JSONL per il fine-tuning
-
-## ⚙️ Setup
-
-### 1. Installa le dipendenze
-```bash
-pip install openai
+Crea un file `.env` nella root con:
+```
+OPENAI_API_KEY=sk-...
 ```
 
-### 2. Configura la API Key
-Crea un file `.env` nella root del progetto:
-```
-OPENAI_API_KEY=tua_chiave_api_qui
-```
-
-**⚠️ IMPORTANTE**: Non condividere mai la tua API key! Il file `.env` è ignorato da Git.
-
-### 3. Alternativa: Variabile d'ambiente
-```bash
-# Windows PowerShell
-$env:OPENAI_API_KEY="tua_chiave_api_qui"
-
-# Windows CMD
-set OPENAI_API_KEY=tua_chiave_api_qui
-
-# Linux/Mac
-export OPENAI_API_KEY="tua_chiave_api_qui"
+Installa le dipendenze:
+```powershell
+python -m venv .venv; .\.venv\Scripts\Activate.ps1; pip install -r requirements.txt
 ```
 
-## 🚀 Utilizzo
+## 1) Modalità Prompting (consigliata per partire)
 
-### Test API (senza consumare crediti)
-```bash
-python simulatore_api.py
+Estrai lo schema (opzionale ma consigliato):
+```powershell
+python .\scripts\extract_schema_from_sql.py
 ```
 
-### Test API reale (richiede crediti)
-```bash
-python fine_tuning_prova.py
+Esegui inferenza con K-shot opzionale:
+```powershell
+python .\scripts\prompt_infer.py "Elenca i 10 clienti con più ordini" --k 3
 ```
 
-### Monitoraggio Fine-tuning
-```bash
-python monitor_fine_tune.py
+Valuta sugli esempi (senza allenare):
+```powershell
+python .\scripts\evaluate_prompting.py --k 3 --limit 10
+```
+Usa `--dry-run` per vedere la finestra di contesto senza chiamare l'API.
+
+## 2) Prepara il dataset di fine-tuning
+Opzionale ma consigliato: genera lo schema canonico dal dump SQL (se hai aggiunto `dataset/northwind.sql`):
+```powershell
+python .\scripts\extract_schema_from_sql.py
 ```
 
-## 💰 Costi
+Poi genera il file `dataset/northwind_ft_train.jsonl` (formato chat FT) a partire dagli esempi esistenti; se presente, incorpora lo schema canonico:
+```powershell
+python .\scripts\prepare_ft_dataset.py
+```
+Output atteso: un messaggio con il numero di esempi convertiti.
 
-- **API standard**: ~$0.002 per 1000 token
-- **Fine-tuning**: ~$8 per 1M token di training
-- **Dataset di esempio**: ~$0.08 per il training
+## 3) Avvia il fine-tuning su gpt-4.1-mini
+```powershell
+python .\scripts\fine_tune.py
+```
+Lo script:
+- carica il file di training su OpenAI
+- crea un job di fine-tuning su `gpt-4.1-mini`
+- fa polling finché termina
+- salva il model id risultante in `.ft_state.json`
 
-## 📋 Note
+Nota: il fine-tuning può richiedere tempo e crediti. Verifica i limiti e i costi del tuo account.
 
-- Il fine-tuning richiede crediti OpenAI
-- Il simulatore permette di testare la logica senza costi
-- Tutto il codice di fine-tuning è pronto ma commentato per sicurezza
+## 4) Esegui inferenza con il modello FT
+Dopo il completamento, puoi porre domande in italiano e ottenere la SQL:
+```powershell
+python .\scripts\inference.py "Elenca i 10 clienti con più ordini"
+```
+Se `.ft_state.json` non è presente o non contiene `fine_tuned_model`, lo script usa il modello base `gpt-4.1-mini`.
 
-## 🔧 Troubleshooting
+## Dati e qualità
+- Assicurati che `northwind_incontext_examples.jsonl` contenga molti esempi vari e corretti. Più copertura → migliore qualità.
+- Il file `northwind_system_prompt.txt` deve imporre le regole chiave (solo SELECT, nessun testo extra, ecc.).
+- `northwind_schema.json` è opzionale, ma aiuta il modello a rispettare tabelle e colonne disponibili.
 
-- **Quota exceeded**: Aggiungi crediti al tuo account OpenAI
-- **API key not found**: Verifica il file `.env` o la variabile d'ambiente
-- **File format error**: Il dataset deve essere in formato JSONL valido
+## Troubleshooting
+- Errore API Key: verifica `.env` e la variabile `OPENAI_API_KEY`.
+- Formato dataset: ogni riga del file FT deve contenere `{ "messages": [ ... ] }`.
+- Modello non trovato: assicurati che il job FT sia terminato con stato `succeeded` e che `.ft_state.json` contenga `fine_tuned_model`.
+
+## Licenza
+Uso interno/accademico. Verifica le policy OpenAI e i termini d’uso del dataset Northwind.

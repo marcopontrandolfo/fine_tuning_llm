@@ -44,5 +44,11 @@ Thumbs.db
 # --- Logs ---
 *.log
 
+# --- Local results / artifacts ---
+results/
+*.coverage
+coverage.xml
+*.csv
+
 # --- Jupyter ---
 .ipynb_checkpoints/

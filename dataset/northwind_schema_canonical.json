@@ -1,0 +1,236 @@
+{
+  "tables": {
+    "Category": [
+      "categoryId",
+      "categoryName",
+      "description",
+      "picture"
+    ],
+    "Region": [
+      "regionId",
+      "regiondescription"
+    ],
+    "Territory": [
+      "territoryId",
+      "territorydescription",
+      "regionId"
+    ],
+    "CustomerDemographics": [
+      "customerTypeId",
+      "customerDesc"
+    ],
+    "Customer": [
+      "custId",
+      "companyName",
+      "contactName",
+      "contactTitle",
+      "address",
+      "city",
+      "region",
+      "postalCode",
+      "country",
+      "phone",
+      "mobile",
+      "email",
+      "fax"
+    ],
+    "CustCustDemographics": [
+      "custId",
+      "customerTypeId"
+    ],
+    "Employee": [
+      "employeeId",
+      "lastname",
+      "firstname",
+      "title",
+      "titleOfCourtesy",
+      "birthDate",
+      "hireDate",
+      "address",
+      "city",
+      "region",
+      "postalCode",
+      "country",
+      "phone",
+      "extension",
+      "mobile",
+      "email",
+      "photo",
+      "notes",
+      "mgrId",
+      "photoPath"
+    ],
+    "EmployeeTerritory": [
+      "employeeId",
+      "territoryId"
+    ],
+    "Supplier": [
+      "supplierId",
+      "companyName",
+      "contactName",
+      "contactTitle",
+      "address",
+      "city",
+      "region",
+      "postalCode",
+      "country",
+      "phone",
+      "email",
+      "fax",
+      "HomePage"
+    ],
+    "Product": [
+      "productId",
+      "productName",
+      "supplierId",
+      "categoryId",
+      "quantityPerUnit",
+      "unitPrice",
+      "unitsInStock",
+      "unitsOnOrder",
+      "reorderLevel",
+      "discontinued"
+    ],
+    "Shipper": [
+      "shipperId",
+      "companyName",
+      "phone"
+    ],
+    "SalesOrder": [
+      "orderId",
+      "custId",
+      "employeeId",
+      "orderDate",
+      "requiredDate",
+      "shippedDate",
+      "shipperid",
+      "freight",
+      "shipName",
+      "shipAddress",
+      "shipCity",
+      "shipRegion",
+      "shipPostalCode",
+      "shipCountry"
+    ],
+    "OrderDetail": [
+      "orderDetailId",
+      "orderId",
+      "productId",
+      "unitPrice",
+      "quantity",
+      "discount"
+    ]
+  },
+  "foreign_keys": [
+    {
+      "table": "Territory",
+      "columns": [
+        "regionId"
+      ],
+      "ref_table": "Region",
+      "ref_columns": [
+        "regionId"
+      ]
+    },
+    {
+      "table": "CustCustDemographics",
+      "columns": [
+        "custId"
+      ],
+      "ref_table": "Customer",
+      "ref_columns": [
+        "custId"
+      ]
+    },
+    {
+      "table": "CustCustDemographics",
+      "columns": [
+        "customerTypeId"
+      ],
+      "ref_table": "CustomerDemographics",
+      "ref_columns": [
+        "customerTypeId"
+      ]
+    },
+    {
+      "table": "EmployeeTerritory",
+      "columns": [
+        "employeeId"
+      ],
+      "ref_table": "Employee",
+      "ref_columns": [
+        "employeeId"
+      ]
+    },
+    {
+      "table": "EmployeeTerritory",
+      "columns": [
+        "territoryId"
+      ],
+      "ref_table": "Territory",
+      "ref_columns": [
+        "territoryId"
+      ]
+    },
+    {
+      "table": "Product",
+      "columns": [
+        "supplierId"
+      ],
+      "ref_table": "Supplier",
+      "ref_columns": [
+        "supplierId"
+      ]
+    },
+    {
+      "table": "Product",
+      "columns": [
+        "categoryId"
+      ],
+      "ref_table": "Category",
+      "ref_columns": [
+        "categoryId"
+      ]
+    },
+    {
+      "table": "SalesOrder",
+      "columns": [
+        "shipperid"
+      ],
+      "ref_table": "Shipper",
+      "ref_columns": [
+        "shipperid"
+      ]
+    },
+    {
+      "table": "SalesOrder",
+      "columns": [
+        "custId"
+      ],
+      "ref_table": "Customer",
+      "ref_columns": [
+        "custId"
+      ]
+    },
+    {
+      "table": "OrderDetail",
+      "columns": [
+        "orderId"
+      ],
+      "ref_table": "SalesOrder",
+      "ref_columns": [
+        "orderId"
+      ]
+    },
+    {
+      "table": "OrderDetail",
+      "columns": [
+        "productId"
+      ],
+      "ref_table": "Product",
+      "ref_columns": [
+        "productId"
+      ]
+    }
+  ]
+}
