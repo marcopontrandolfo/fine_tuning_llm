@@ -16,6 +16,7 @@ import os
 from pathlib import Path
 from datetime import datetime
 import time
+import re
 
 from dotenv import load_dotenv
 import mysql.connector
@@ -31,6 +32,8 @@ SCHEMA_FILE = DATASET_DIR / "northwind_schema_canonical.json"
 # Default ora impostato su gpt-4.1-mini
 DEFAULT_PRICING = {
     "gpt-4.1-mini": {"input": 0.40, "output": 1.60},  # valori indicativi
+    # Prezzi standard (modalità chat) per gpt-4.1: usare override CLI/env se diverso
+    "gpt-4.1": {"input": 3.00, "output": 12.00},
 }
 
 
@@ -56,11 +59,46 @@ def build_messages(question: str, include_context: bool = True):
     ]
 
 
+def _normalize_single_sql(text: str) -> str | None:
+    """Return the raw text as SQL if it already starts with WITH or SELECT.
+    Removes code fences; ensures a trailing semicolon for consistency.
+    Skips regex-based extraction because the model is instructed to output ONLY the final query."""
+    if not text:
+        return None
+    cleaned = re.sub(r"```(?:sql)?\n", "", text, flags=re.IGNORECASE)
+    cleaned = re.sub(r"```", "", cleaned).strip()
+    low = cleaned.lower()
+    if not (low.startswith("with") or low.startswith("select")):
+        return None
+    if not cleaned.rstrip().endswith(";"):
+        cleaned = cleaned.rstrip() + ";"
+    return cleaned
+
+
+def _build_count_sql(stmt: str) -> str:
+    body = stmt.rstrip().rstrip(";")
+    low = body.lower()
+    if low.startswith("with"):
+        idx = low.rfind("select")
+        if idx == -1:
+            return "SELECT 0"
+        cte_part = body[:idx]
+        main_select = body[idx:]
+        return f"{cte_part} SELECT COUNT(*) FROM ( {main_select} ) AS _t"
+    return f"SELECT COUNT(*) FROM ( {body} ) AS _t"
+
+
 def _run_query(sql: str, preview_rows: int = 10):
-    if not sql.strip().lower().startswith("select"):
-        raise ValueError("Sono permesse solo query SELECT in modalità verifica.")
-    # Semplice guardia per evitare più statement
-    if ";" in sql.strip()[:-1]:
+    sql_clean = sql.strip()
+    parts = [p.strip() for p in sql_clean.split(';') if p.strip()]
+    if len(parts) == 2 and parts[0].lower().startswith('with') and parts[1].lower().startswith('select'):
+        sql_clean = parts[0] + '\n' + parts[1]
+    if not sql_clean.rstrip().endswith(';'):
+        sql_clean += ';'
+    head = sql_clean.strip().lower()
+    if not (head.startswith('select') or head.startswith('with')):
+        raise ValueError("Sono permesse solo query SELECT (anche con CTE WITH) in modalità verifica.")
+    if ';' in sql_clean.strip()[:-1]:
         raise ValueError("La query non deve contenere più statement.")
 
     host = os.getenv("MYSQL_HOST", "localhost")
@@ -71,11 +109,11 @@ def _run_query(sql: str, preview_rows: int = 10):
     try:
         # Usa cursori "buffered" per evitare l'errore "Unread result found"
         cur = conn.cursor(buffered=True)
-        cur.execute(sql)
+        cur.execute(sql_clean)
         cols = [d[0] for d in cur.description] if cur.description else []
         rows = cur.fetchmany(preview_rows)
-        # Conta righe totali in modo semplice: esegui COUNT(*) come subquery
-        count_sql = f"SELECT COUNT(*) FROM ( {sql.rstrip(';')} ) AS _t"
+        # Conta righe totali con wrapper CTE-aware
+        count_sql = _build_count_sql(sql_clean)
         cur2 = conn.cursor(buffered=True)
         cur2.execute(count_sql)
         total = cur2.fetchone()[0]
@@ -139,10 +177,11 @@ def _log_cost(row: dict, path: Path):
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("question", type=str, help="Domanda in linguaggio naturale")
-    parser.add_argument("--model", type=str, default="gpt-4.1-mini", help="Modello da usare")
+    parser.add_argument("--model", type=str, default="gpt-4.1-2025-04-14", help="Modello da usare")
     parser.add_argument("--no-context", action="store_true", help="Non includere system prompt e schema nel messaggio; usa solo la domanda (utile con modelli FT)")
     parser.add_argument("--dry-run", action="store_true", help="Stampa i messaggi senza chiamare l'API")
     parser.add_argument("--exec", action="store_true", help="Esegue la SQL generata su MySQL e mostra un'anteprima dei risultati")
+    parser.add_argument("--validate", action="store_true", help="Valida la sintassi su MySQL con EXPLAIN senza eseguire la query")
     parser.add_argument("--input", type=float, default=None, help="Costo input per 1M token (USD). Se omesso usa env o default modello")
     parser.add_argument("--output", type=float, default=None, help="Costo output per 1M token (USD). Se omesso usa env o default modello")
     parser.add_argument("--cost-log", type=str, default=str(ROOT / "results" / "qa_cost_log.csv"), help="Percorso CSV per tracciare domanda, risposta e costi")
@@ -167,8 +206,13 @@ def main() -> None:
         temperature=0.0,
     )
     latency = time.perf_counter() - t0
-    sql = resp.choices[0].message.content.strip()
-    print(sql)
+    raw = resp.choices[0].message.content.strip()
+    sql = _normalize_single_sql(raw)
+    print("=== Output modello (completo) ===")
+    print(raw)
+    if sql:
+        print("\n=== SQL estratta ===")
+        print(sql)
 
     # Calcolo e log costi
     usage = getattr(resp, "usage", None)
@@ -214,6 +258,9 @@ def main() -> None:
         # Carica anche eventuali credenziali DB
         load_dotenv()
         try:
+            if not sql:
+                print("\n[ESECUZIONE SQL] Nessuna SQL valida da eseguire (attesa WITH/SELECT).")
+                return
             result = _run_query(sql)
         except Exception as e:
             print(f"\n[ESECUZIONE SQL] Errore: {e}")
@@ -224,6 +271,37 @@ def main() -> None:
         for r in result["preview"]:
             print(" | ".join(str(x) for x in r))
         print(f"\nTotale righe: {result['total']}")
+    elif args.validate:
+        # Valida sintassi con EXPLAIN senza eseguire la query
+        load_dotenv()
+        try:
+            if not sql:
+                print("\n[VALIDAZIONE] Nessuna SQL valida da spiegare (attesa WITH/SELECT).")
+                return
+            host = os.getenv("MYSQL_HOST", "localhost")
+            user = os.getenv("MYSQL_USER", "root")
+            password = os.getenv("MYSQL_PASSWORD", "")
+            database = os.getenv("MYSQL_DB", "Northwind")
+            conn = mysql.connector.connect(host=host, user=user, password=password, database=database)
+            cur = conn.cursor()
+            sql_clean = sql.strip()
+            parts = [p.strip() for p in sql_clean.split(';') if p.strip()]
+            if len(parts) == 2 and parts[0].lower().startswith('with') and parts[1].lower().startswith('select'):
+                sql_clean = parts[0] + '\n' + parts[1]
+            if not sql_clean.rstrip().endswith(';'):
+                sql_clean += ';'
+            cur.execute(f"EXPLAIN {sql_clean}")
+            rows = cur.fetchall()
+            cols = [d[0] for d in cur.description] if cur.description else []
+            print("\n[VALIDAZIONE] EXPLAIN output:")
+            if cols:
+                print(" | ".join(cols))
+            for r in rows:
+                print(" | ".join(str(x) for x in r))
+            cur.close()
+            conn.close()
+        except Exception as e:
+            print(f"\n[VALIDAZIONE] Errore sintassi: {e}")
 
 
 if __name__ == "__main__":

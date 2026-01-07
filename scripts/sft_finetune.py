@@ -47,7 +47,7 @@ def main():
     load_dotenv()
     parser = argparse.ArgumentParser(description="Start an OpenAI SFT job for Northwind SQL")
     parser.add_argument("--train", type=str, default=str(DEFAULT_TRAIN), help="Path to training JSONL (chat format)")
-    parser.add_argument("--base-model", type=str, default="gpt-4.1-mini", help="Base model to fine-tune (e.g., gpt-4.1-mini)")
+    parser.add_argument("--base-model", type=str, default="gpt-4.1-2025-04-14", help="Base model to fine-tune (e.g., gpt-4.1-mini)")
     parser.add_argument("--suffix", type=str, default="northwind-sql", help="Suffix for the fine-tuned model name")
     parser.add_argument("--poll-seconds", type=int, default=15, help="Polling interval in seconds")
     args = parser.parse_args()
