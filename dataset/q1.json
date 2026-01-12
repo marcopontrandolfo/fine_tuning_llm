@@ -6,7 +6,7 @@
         },
         {
             "role": "user",
-            "content": "Per il 2006 individua i dipendenti la cui mediana dei ricavi ordine supera la mediana globale degli ordini dell’anno e il cui 75° percentile (approssimato con l’elemento a CEIL(0.75*cnt)) è almeno 1.5 volte la mediana globale; per ciascuno mostra numero ordini, mediana dipendente, p75 dipendente, mediana globale e rapporto p75/mediana globale. Ordina per rapporto desc."
+            "content": "Per ogni prodotto che ha avuto variazioni di prezzo tra ordini diversi: calcola la variazione percentuale del prezzo, la variazione percentuale della quantità venduta nel mese successivo, l'elasticità (Δ%Q / Δ%P). Classifica prodotti come \"Elastici\" (|e| > 1), \"Anelastici\" (|e| < 1), \"Unitari\" (|e| ≈ 1). Mostra media elasticità per categoria."
         }
     ]
 }

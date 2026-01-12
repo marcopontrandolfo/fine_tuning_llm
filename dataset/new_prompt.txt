@@ -7,12 +7,21 @@ Evita assolutamente:
 - Qualsiasi tabella o colonna non presente nello schema Northwind.
 - Funzioni non supportate in MySQL 8:
   PERCENTILE_CONT, PERCENTILE_DISC, FILTER, ILIKE, QUALIFY, CROSS APPLY, FULL OUTER JOIN, OFFSET/FETCH, ordered-set aggregates.
+- Variabili utente e assegnazioni inline: NON usare @variabile, := o SET dentro le query.
+  Se devi riusare un calcolo, mettilo in una CTE o ripeti l'espressione.
+    VIETATO: SELECT (var := TIMESTAMPDIFF(...)) * 2 AS result
+    VIETATO: SELECT @months := 3, @months * revenue
+    CORRETTO: Calcola in una CTE e riusa il risultato
 - Uso scorretto degli alias:
   Non usare alias appena definiti in PARTITION BY o ORDER BY: ripeti l'espressione o usa una CTE.
   Non lasciare subquery o derived tables prive di alias: usa sempre AS q o simile.
 - Ambiguità nei join: se più tabelle contengono la stessa colonna, qualificala sempre (es. t1.orderId vs. t2.orderId).
 - Subquery scalari annidate in espressioni complesse: usa CTE o FROM (...) con alias.
 - Qualunque espressione che violi il vincolo ONLY_FULL_GROUP_BY: ogni colonna non aggregata nel SELECT deve comparire nel GROUP BY.
+- Window functions su colonne grezze insieme a GROUP BY: NON usare AVG(col) OVER (...) su una colonna grezza nello stesso SELECT che ha GROUP BY.
+  Prima aggrega in una CTE, poi applica window functions sul risultato aggregato.
+    VIETATO: SELECT id, AVG(x) AS agg, AVG(x) OVER (...) AS win FROM t GROUP BY id  -- x non esiste dopo GROUP BY!
+    CORRETTO: CTE1 AS (SELECT id, AVG(x) AS agg FROM t GROUP BY id), CTE2 AS (SELECT id, agg, AVG(agg) OVER (...) FROM CTE1)
 - CTE autoreferenziali: non definire una CTE che referenzia sé stessa all'interno del proprio corpo (a meno di WITH RECURSIVE per serie di date).
 
 Linee guida da seguire:
@@ -30,6 +39,14 @@ Linee guida da seguire:
   Rispetta ONLY_FULL_GROUP_BY: ogni colonna non aggregata va nel GROUP BY.
   Proteggi le divisioni con NULLIF o CASE per evitare divisioni per zero.
   Evita aggregazioni annidate: non annidare funzioni di aggregazione (es. AVG(... COUNT(*) ...)). Se serve un conteggio dentro un'altra aggregazione, calcolalo prima in una CTE o con funzioni finestra (es. COUNT() OVER (...)) e usa quel valore (es. cnt) nella SELECT esterna.
+  CROSS JOIN con aggregazioni: se combini CTE a riga singola (es. Totals) con SUM/AVG su altre tabelle, 
+  le colonne delle CTE a riga singola devono comunque stare nel GROUP BY oppure essere wrappate in MAX/MIN.
+    SBAGLIATO:
+      SELECT tc.revenue, SUM(c.qty) FROM Combined c CROSS JOIN TotalsCurr tc;  -- tc.revenue non aggregato
+    CORRETTO (opzione 1 - GROUP BY):
+      SELECT tc.revenue, SUM(c.qty) FROM Combined c CROSS JOIN TotalsCurr tc GROUP BY tc.revenue;
+    CORRETTO (opzione 2 - wrap in MAX):
+      SELECT MAX(tc.revenue) AS revenue, SUM(c.qty) FROM Combined c CROSS JOIN TotalsCurr tc;
 - Crescita YoY: calcola la crescita anno-su-anno usando funzioni finestra, es.
   (revenue / NULLIF(LAG(revenue) OVER (PARTITION BY categoryId ORDER BY anno), 0) - 1).
   Non creare CTE per la "prev" che si auto-referenziano; se preferisci un self-join, joina la CTE delle metriche (es. CatYear/CatYearFull) con sé stessa su `prev.anno = curr.anno - 1`.
@@ -41,6 +58,27 @@ Linee guida da seguire:
     rn >= CEIL(0.9 * cnt) o media dei due vicini.
 - Window Functions ammesse:
   ROW_NUMBER, RANK, DENSE_RANK, LAG, LEAD, SUM, AVG, COUNT, STDDEV_POP (con OVER (...)).
+- Medie mobili e rolling statistics:
+  Usa SOLO window functions con ROWS BETWEEN, MAI self-join + GROUP BY.
+    SBAGLIATO (mescola self-join e window functions):
+      SELECT ds.orderDate, AVG(ds2.revenue) OVER (...) 
+      FROM DailySales ds JOIN DailySales ds2 ON ... GROUP BY ds.orderDate
+    CORRETTO (solo window functions):
+      SELECT orderDate, revenue,
+        AVG(revenue) OVER (ORDER BY orderDate ROWS BETWEEN 29 PRECEDING AND CURRENT ROW) AS ma30,
+        STDDEV_POP(revenue) OVER (ORDER BY orderDate ROWS BETWEEN 29 PRECEDING AND CURRENT ROW) AS sd30
+      FROM DailySales
+  Non serve GROUP BY quando usi window functions su una CTE già aggregata.
+- Aggregazione + Window function insieme:
+  Non usare window functions su colonne grezze nello stesso SELECT che ha GROUP BY.
+  Prima aggrega in una CTE, poi applica la window function sulla CTE.
+    SBAGLIATO (window function su colonna grezza con GROUP BY):
+      SELECT productId, AVG(revenue) AS avgMonth, 
+             AVG(revenue) OVER (PARTITION BY productId) AS avgYear  -- revenue non esiste dopo GROUP BY
+      FROM MonthlySales GROUP BY productId, m
+    CORRETTO (prima aggrega, poi window):
+      CTE1 AS (SELECT productId, m, AVG(revenue) AS avgMonth FROM MonthlySales GROUP BY productId, m),
+      CTE2 AS (SELECT productId, m, avgMonth, AVG(avgMonth) OVER (PARTITION BY productId) AS avgYear FROM CTE1)
 - Date handling:
   Raggruppamento mensile: DATE_FORMAT(date_col, '%Y-%m')
   Estrazione anno: YEAR(date_col)
@@ -58,6 +96,12 @@ Linee guida da seguire:
   Non referenziare alias del SELECT nella WHERE dello stesso SELECT; ripeti l'espressione originale, usa HAVING se appropriato, oppure incapsula in una subquery e filtra all'esterno.
   Alias in CTE successive: quando una CTE (es. SalesData) espone colonne, le CTE successive che la usano devono qualificare le colonne con l'alias della CTE, non con gli alias delle tabelle originali.
     SBAGLIATO: FROM SalesData sd ... SELECT c.categoryId  (c non esiste qui)
-    CORRETTO: FROM SalesData sd ... SELECT sd.categoryId
-- Intervalli temporali vaghi:
+    CORRETTO: FROM SalesData sd ... SELECT sd.categoryId- Esposizione colonne in CTE: ogni colonna che serve nelle query successive DEVE essere esplicitamente nel SELECT della CTE. 
+  Non puoi usare colonne delle tabelle interne (o, od, c...) fuori dalla CTE; usa solo l'alias della CTE (sd, q...).
+    SBAGLIATO:
+      WITH SalesData AS (SELECT DAYOFWEEK(o.orderDate) AS weekday, od.quantity FROM ...)
+      SELECT sd.orderDate, od.quantity ...  -- "orderDate" non esposto, "od" non esiste fuori
+    CORRETTO:
+      WITH SalesData AS (SELECT o.orderDate, DAYOFWEEK(o.orderDate) AS weekday, od.quantity FROM ...)
+      SELECT sd.orderDate, sd.weekday, sd.quantity ...  -- tutto esposto e qualificato con sd- Intervalli temporali vaghi:
   Se la richiesta è generica (es. "ultimi ordini", "ordini recenti"), assumi gli ultimi 12 mesi e inserisci un filtro esplicito nella WHERE.
