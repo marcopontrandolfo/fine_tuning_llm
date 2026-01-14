@@ -50,36 +50,49 @@ ORCHESTRATOR_SYSTEM_PROMPT = """\
 Sei un Data Analyst Orchestrator esperto. Il tuo compito è scomporre una richiesta di analisi complessa in sotto-query SQL più semplici e indipendenti.
 
 Database: Northwind (MySQL 8)
-Tabelle principali: Customer, SalesOrder, OrderDetail, Product, Category, Supplier, Employee, Shipper, Region, Territory
 
 ⚠️ REGOLA CRITICA - OUTPUT SINTETICO:
 Questo sistema è progettato per database con MILIONI di righe.
-Ogni sotto-query DEVE produrre un output SINTETICO (poche righe), MAI dati grezzi.
-L'output di tutte le sotto-query sarà letto da un LLM per l'analisi finale.
+L'output di tutte le sotto-query sarà letto da un LLM per l'analisi finale, quindi ogni query DEVE essere progettata per restituire POCHE RIGHE (idealmente 1-30).
+
+COME garantire output ridotto:
+- USA sempre aggregazioni: SUM(), COUNT(), AVG(), MAX(), MIN()
+- USA sempre GROUP BY su poche categorie (es. 8 categorie, 4 trimestri, 12 mesi)
+- USA sempre TOP N / LIMIT per classifiche (Top 10 clienti, Top 5 prodotti)
+- MAI query "lista tutti" o "mostra ogni" - sempre "i migliori N" o "il totale per X"
 
 ✅ TIPI DI QUERY CONSENTITI (output ridotto):
 - Aggregazioni: "Calcola il ricavo TOTALE...", "Conta il NUMERO di..."
 - Top/Bottom N: "Top 10 clienti...", "I 5 prodotti meno venduti..."
 - Medie/Percentuali: "Media ordini per cliente", "Percentuale crescita YoY"
-- Raggruppamenti: "Ricavo PER categoria", "Vendite PER mese"
+- Raggruppamenti LIMITATI: "Ricavo PER categoria (8 categorie)", "Vendite PER mese (12 mesi)"
 - Conteggi: "Quanti ordini...", "Numero di clienti attivi"
 - Confronti aggregati: "Confronta il ricavo Q1 vs Q2"
 - Valori singoli: "Mese con il ricavo massimo", "Cliente più fedele"
 
 ❌ TIPI DI QUERY VIETATI (troppi dati):
+- "Per ogni prodotto..." → Centinaia di righe! Usa invece "Top 10 prodotti..."
+- "Per ogni cliente..." → Troppi clienti! Usa invece "Top 20 clienti..."
 - "Mostra tutti gli ordini..." → Milioni di righe!
-- "Lista completa dei clienti..." → Troppe righe!
-- "Elenca tutte le transazioni..." → Impossibile analizzare!
-- Query senza aggregazione (SUM, COUNT, AVG, MAX, MIN, GROUP BY, LIMIT)
+- "Lista completa..." → Mai liste complete!
+- Query senza aggregazione E senza LIMIT
+
+⚠️ TRASFORMAZIONI OBBLIGATORIE:
+Se la domanda dell'utente chiede "per ogni X", DEVI trasformarla:
+- "Per ogni prodotto" → "Top 10/20 prodotti per [metrica]"
+- "Per ogni cliente" → "Top 10/20 clienti per [metrica]"  
+- "Per ogni mese degli ultimi 24 mesi" → "Trend trimestrale (8 righe)" oppure "Top 6 mesi per [metrica]"
+- "Proiezioni per ogni prodotto" → "Proiezioni per i Top 10 prodotti"
 
 Linee guida:
 1. Analizza la richiesta dell'utente
 2. Identifica le diverse dimensioni/aspetti da analizzare
-3. Genera sotto-domande INDIPENDENTI (non devono dipendere l'una dall'altra)
-4. Ogni sotto-domanda deve essere specifica e focalizzata su UN aspetto
-5. OGNI query deve contenere: aggregazioni (SUM, COUNT, AVG) O limiti (TOP N, LIMIT) O raggruppamenti (GROUP BY)
-6. Non generare più di 8 sotto-query (ottimizza per copertura)
-7. Ogni sotto-query deve restituire MASSIMO 20-30 righe
+3. TRASFORMA richieste "per ogni X" in "Top N di X" per limitare output
+4. Genera sotto-domande INDIPENDENTI (non devono dipendere l'una dall'altra)
+5. Ogni sotto-domanda deve essere specifica e focalizzata su UN aspetto
+6. OGNI query deve contenere: aggregazioni (SUM, COUNT, AVG) E/O limiti espliciti (TOP N, LIMIT)
+7. Non generare più di 8 sotto-query (ottimizza per copertura)
+8. Specifica sempre il numero atteso di righe tra parentesi: "(max 10 righe)", "(12 mesi)"
 
 Rispondi SOLO con un JSON array di oggetti, ogni oggetto ha:
 - "id": numero progressivo (1, 2, 3...)
@@ -88,12 +101,12 @@ Rispondi SOLO con un JSON array di oggetti, ogni oggetto ha:
 
 Esempio di output:
 [
-  {"id": 1, "aspect": "total_revenue", "question": "Calcola il ricavo TOTALE del 2006"},
-  {"id": 2, "aspect": "revenue_by_category", "question": "Calcola il ricavo totale PER categoria nel 2006"},
-  {"id": 3, "aspect": "monthly_trend", "question": "Calcola il ricavo TOTALE per ogni mese del 2006 (12 righe)"},
-  {"id": 4, "aspect": "top_customers", "question": "Top 10 clienti per ricavo nel 2006"},
-  {"id": 5, "aspect": "avg_order_value", "question": "Calcola il valore MEDIO degli ordini nel 2006"},
-  {"id": 6, "aspect": "yoy_growth", "question": "Calcola la percentuale di crescita del ricavo 2006 vs 2005"}
+  {"id": 1, "aspect": "total_revenue", "question": "Calcola il ricavo TOTALE del 2006 (1 riga)"},
+  {"id": 2, "aspect": "revenue_by_category", "question": "Calcola il ricavo totale PER categoria nel 2006 (max 8 righe)"},
+  {"id": 3, "aspect": "quarterly_trend", "question": "Calcola il ricavo TOTALE per trimestre del 2006 (4 righe)"},
+  {"id": 4, "aspect": "top_customers", "question": "Top 10 clienti per ricavo nel 2006 (10 righe)"},
+  {"id": 5, "aspect": "top_products", "question": "Top 10 prodotti per ricavo nel 2006 (10 righe)"},
+  {"id": 6, "aspect": "yoy_growth", "question": "Calcola la percentuale di crescita del ricavo 2006 vs 2005 (1 riga)"}
 ]
 """
 
@@ -109,12 +122,64 @@ Il tuo compito:
 3. **Pattern identificati**: tendenze, correlazioni tra i diversi aspetti
 4. **Anomalie e outlier**: valori insoliti, picchi, cali significativi
 5. **Confronti**: metti in relazione i diversi aspetti analizzati
-6. **Raccomandazioni**: suggerimenti actionable basati sui dati
-7. **Limitazioni**: cosa non si può concludere, dati mancanti
+6. **Valutazione Followup** (se presenti query di approfondimento): 
+   Struttura questa sezione in modo SPECIFICO:
+   
+   a) **PROBLEMA RILEVATO**: Descrivi ESATTAMENTE quale anomalia, lacuna informativa o aspetto critico 
+      è emerso dall'analisi iniziale che ha richiesto approfondimento.
+      Esempio: "L'analisi iniziale ha mostrato un calo del 40% in Q3, ma non identificava le cause"
+      Esempio: "I dati iniziali coprivano solo il periodo corrente, mancava il confronto storico"
+      Esempio: "Era emersa una concentrazione anomala su pochi prodotti, ma non era chiaro se fosse strutturale"
+   
+   b) **STRATEGIA DI APPROFONDIMENTO**: Spiega quale approccio l'orchestratore ha adottato per 
+      investigare il problema (quali dimensioni ha esplorato: temporale, per categoria, per prodotto, etc.)
+   
+   c) **RISOLUZIONE**: Descrivi COME i followup hanno risolto o chiarito il problema iniziale.
+      Quali risposte concrete sono emerse? Il problema è stato spiegato? Confermato? Ridimensionato?
+   
+   d) **LIMITI**: Se alcuni followup non hanno prodotto dati o non hanno risposto al problema, indicalo.
+   
+   NON elencare ogni query singolarmente. Scrivi un RACCONTO LOGICO del processo di approfondimento.
+7. **Raccomandazioni**: suggerimenti actionable basati sui dati
+8. **Limitazioni**: cosa non si può concludere, dati mancanti
 
 Formatta l'output in modo chiaro con sezioni e bullet point.
 Usa numeri e percentuali per supportare le osservazioni.
 Rispondi in italiano.
+"""
+
+ORCHESTRATOR_CHECK_COMPLETENESS_PROMPT = """\
+Sei un Data Analyst Orchestrator esperto. Hai ricevuto i risultati delle sotto-query eseguite.
+Ora devi valutare se hai TUTTI i dati necessari per un'analisi completa e accurata.
+
+Database: Northwind (MySQL 8)
+
+Analizza criticamente i risultati e chiediti:
+1. **Anomalie da approfondire**: Ci sono valori anomali (picchi, cali, outlier) che richiedono investigazione?
+   - Es: Un calo del 40% in Q3 → Serve capire QUALI categorie/prodotti hanno causato il calo
+2. **Aspetti mancanti**: La domanda dell'utente copre aspetti non ancora analizzati?
+   - Es: L'utente chiede "analisi vendite" ma non abbiamo dati sui prodotti
+3. **Correlazioni da verificare**: I dati suggeriscono correlazioni che andrebbero confermate?
+   - Es: Top clienti sono tutti dalla stessa regione → Serve conferma geografica
+4. **Contesto temporale**: Servono confronti con periodi precedenti per dare contesto?
+
+⚠️ REGOLE PER LE NUOVE QUERY:
+- Max 3 nuove query per iterazione
+- Ogni query DEVE produrre poche righe (usa aggregazioni, TOP N, LIMIT)
+- Le query devono essere INDIPENDENTI e focalizzate su UN aspetto specifico
+- Specifica sempre il numero atteso di righe tra parentesi
+
+Rispondi con un JSON object:
+{
+  "analysis_complete": true/false,
+  "reasoning": "Breve spiegazione del perché servono o non servono altri dati",
+  "followup_queries": [
+    {"id": N, "aspect": "nome_aspetto", "question": "Domanda specifica (max X righe)"}
+  ]
+}
+
+Se analysis_complete=true, followup_queries deve essere un array vuoto [].
+Se analysis_complete=false, fornisci da 1 a 3 query di followup.
 """
 
 
@@ -132,6 +197,7 @@ class SubTask(TypedDict):
     total_rows: Optional[int]
     error: Optional[str]
     sql_usage: Optional[Dict[str, Any]]
+    is_followup: Optional[bool]  # True se generata durante cicli di followup
 
 
 class PipelineState(TypedDict):
@@ -143,6 +209,7 @@ class PipelineState(TypedDict):
     orchestrator_model: str
     max_rows_per_query: int
     max_retries: int
+    max_followups: int
     verbose: bool
     
     # Orchestration Phase 1: Decomposition
@@ -156,6 +223,14 @@ class PipelineState(TypedDict):
     failed_subtasks: int
     retried_subtasks: int
     total_sql_cost: float
+    
+    # Followup cycle tracking
+    current_cycle: int
+    analysis_complete: bool
+    followup_reasoning: Optional[str]
+    total_followup_queries: int
+    orchestrator_check_usage: Optional[Dict[str, Any]]
+    orchestrator_check_cost: Optional[Dict[str, float]]
     
     # Orchestration Phase 2: Analysis
     analysis: Optional[str]
@@ -604,6 +679,7 @@ Rispondi SOLO con il JSON array, senza altri commenti."""
                 "total_rows": None,
                 "error": None,
                 "sql_usage": None,
+                "is_followup": False,  # Query iniziale
             })
         
         usage = {
@@ -615,7 +691,7 @@ Rispondi SOLO con il JSON array, senza altri commenti."""
         
         print(f"✅ [Orchestrator Phase 1] Generati {len(subtasks)} sotto-task:")
         for st in subtasks:
-            print(f"   {st['id']}. [{st['aspect']}] {st['question'][:60]}...")
+            print(f"   {st['id']}. [{st['aspect']}] {st['question']}")
         
         return {
             "subtasks": subtasks,
@@ -797,9 +873,225 @@ def node_retry_failed(state: PipelineState) -> Dict[str, Any]:
     }
 
 
+def node_check_completeness(state: PipelineState) -> Dict[str, Any]:
+    """
+    Nodo 3: Verifica se l'analisi è completa o servono dati aggiuntivi.
+    Se servono, genera nuove query di followup (max 3).
+    """
+    current_cycle = state.get("current_cycle", 0)
+    max_followups = state.get("max_followups", 3)
+    
+    # Se abbiamo raggiunto il limite di cicli, procedi all'analisi
+    if current_cycle >= max_followups:
+        print(f"\n🔄 [Check] Raggiunto limite massimo di {max_followups} cicli di followup")
+        return {
+            "analysis_complete": True,
+            "followup_reasoning": f"Limite di {max_followups} cicli raggiunto",
+        }
+    
+    subtasks = state.get("subtasks", [])
+    successful = [st for st in subtasks if st.get("error") is None and st.get("rows")]
+    
+    if not successful:
+        return {
+            "analysis_complete": True,
+            "followup_reasoning": "Nessun dato disponibile per valutare completezza",
+        }
+    
+    print(f"\n🔍 [Check Completeness] Ciclo {current_cycle + 1}/{max_followups} - Valutazione dati...")
+    
+    try:
+        client = OpenAI()
+        
+        # Costruisci contesto con i risultati attuali
+        results_text = []
+        results_text.append(f"DOMANDA ORIGINALE: \"{state['question']}\"\n")
+        results_text.append(f"SOTTO-ANALISI COMPLETATE ({len(successful)} query):\n")
+        
+        for st in successful:
+            results_text.append(f"\n### {st['id']}. {st['aspect'].upper()}")
+            results_text.append(f"Domanda: {st['question']}")
+            if st.get("rows"):
+                data_text = format_data_as_text(
+                    st["columns"], st["rows"], st["total_rows"], max_display=15
+                )
+                results_text.append(f"Risultati ({st['total_rows']} righe):\n{data_text}")
+            results_text.append("-" * 40)
+        
+        # Aggiungi info sulle query fallite
+        failed = [st for st in subtasks if st.get("error")]
+        if failed:
+            results_text.append(f"\n⚠️ Query fallite: {len(failed)}")
+            for st in failed:
+                results_text.append(f"  - [{st['aspect']}]: {st['error'][:50]}...")
+        
+        full_context = "\n".join(results_text)
+        
+        # Calcola prossimo ID disponibile
+        max_id = max((st["id"] for st in subtasks), default=0)
+        
+        user_prompt = f"""{full_context}
+
+Ciclo attuale: {current_cycle + 1} di {max_followups}
+Prossimo ID disponibile per nuove query: {max_id + 1}
+
+Valuta se hai tutti i dati necessari per un'analisi completa.
+Se servono approfondimenti, genera max 3 query di followup."""
+
+        response = client.chat.completions.create(
+            model=state["orchestrator_model"],
+            messages=[
+                {"role": "system", "content": ORCHESTRATOR_CHECK_COMPLETENESS_PROMPT},
+                {"role": "user", "content": user_prompt},
+            ],
+            temperature=0.3,
+            max_tokens=1500,
+        )
+        
+        raw_output = response.choices[0].message.content or ""
+        
+        # Parse JSON
+        json_str = re.sub(r"```(?:json)?\n?", "", raw_output, flags=re.IGNORECASE)
+        json_str = re.sub(r"```", "", json_str).strip()
+        
+        result = json.loads(json_str)
+        
+        usage = {
+            "prompt_tokens": response.usage.prompt_tokens if response.usage else 0,
+            "completion_tokens": response.usage.completion_tokens if response.usage else 0,
+            "model": state["orchestrator_model"],
+        }
+        
+        # Accumula costi check (gestisce None)
+        prev_check_cost = (state.get("orchestrator_check_cost") or {}).get("total_cost", 0)
+        new_cost = calculate_cost(usage)
+        accumulated_cost = {
+            "input_cost": new_cost["input_cost"],
+            "output_cost": new_cost["output_cost"],
+            "total_cost": prev_check_cost + new_cost["total_cost"],
+        }
+        
+        is_complete = result.get("analysis_complete", True)
+        reasoning = result.get("reasoning", "")
+        followup_queries = result.get("followup_queries", [])
+        
+        if is_complete:
+            print(f"✅ [Check] Analisi completa: {reasoning[:60]}...")
+            return {
+                "analysis_complete": True,
+                "followup_reasoning": reasoning,
+                "current_cycle": current_cycle,
+                "orchestrator_check_usage": usage,
+                "orchestrator_check_cost": accumulated_cost,
+            }
+        else:
+            # Limita a max 3 query
+            followup_queries = followup_queries[:3]
+            
+            print(f"🔄 [Check] Servono approfondimenti: {reasoning[:60]}...")
+            print(f"   Nuove query da eseguire: {len(followup_queries)}")
+            
+            # Converti in SubTask e aggiungi ai subtasks esistenti
+            new_subtasks: List[SubTask] = []
+            for i, fq in enumerate(followup_queries):
+                new_id = max_id + i + 1
+                new_subtasks.append({
+                    "id": new_id,
+                    "aspect": fq.get("aspect", f"followup_{new_id}"),
+                    "question": fq.get("question", ""),
+                    "sql": None,
+                    "columns": None,
+                    "rows": None,
+                    "total_rows": None,
+                    "error": None,
+                    "sql_usage": None,
+                    "is_followup": True,  # Query di approfondimento
+                })
+                print(f"   {new_id}. [{new_subtasks[-1]['aspect']}] {new_subtasks[-1]['question']}")
+            
+            # Aggiungi le nuove query ai subtasks esistenti
+            updated_subtasks = list(subtasks) + new_subtasks
+            
+            return {
+                "analysis_complete": False,
+                "followup_reasoning": reasoning,
+                "subtasks": updated_subtasks,
+                "current_cycle": current_cycle + 1,
+                "total_followup_queries": state.get("total_followup_queries", 0) + len(new_subtasks),
+                "orchestrator_check_usage": usage,
+                "orchestrator_check_cost": accumulated_cost,
+            }
+        
+    except Exception as e:
+        print(f"❌ [Check] Errore: {e}")
+        return {
+            "analysis_complete": True,
+            "followup_reasoning": f"Errore durante check: {e}",
+        }
+
+
+def node_execute_followup(state: PipelineState) -> Dict[str, Any]:
+    """
+    Nodo 3.5: Esegue SOLO le nuove query di followup (quelle senza risultati).
+    """
+    subtasks = state.get("subtasks", [])
+    
+    # Trova i subtask senza risultati (nuove query)
+    pending = [st for st in subtasks if st.get("sql") is None and st.get("error") is None]
+    
+    if not pending:
+        return {}
+    
+    print(f"\n⚡ [Executor] Esecuzione {len(pending)} query di followup...")
+    
+    results: List[SubTask] = []
+    additional_cost = 0.0
+    
+    with ThreadPoolExecutor(max_workers=min(len(pending), 5)) as executor:
+        futures = {
+            executor.submit(
+                execute_single_subtask,
+                st,
+                state["sql_model"],
+                state.get("prompt_file"),
+                state["max_rows_per_query"],
+                state.get("verbose", False),
+            ): st["id"]
+            for st in pending
+        }
+        
+        for future in as_completed(futures):
+            result = future.result()
+            results.append(result)
+            
+            if result.get("sql_usage"):
+                cost = calculate_cost(result["sql_usage"])
+                additional_cost += cost.get("total_cost", 0)
+    
+    # Aggiorna i subtask con i risultati
+    updated_subtasks = list(subtasks)
+    for result in results:
+        for i, st in enumerate(updated_subtasks):
+            if st["id"] == result["id"]:
+                updated_subtasks[i] = result
+                break
+    
+    successful = sum(1 for r in results if r.get("error") is None and r.get("rows"))
+    failed = sum(1 for r in results if r.get("error"))
+    
+    print(f"✅ [Executor] Followup completato: {successful} successi, {failed} errori")
+    
+    return {
+        "subtasks": updated_subtasks,
+        "successful_subtasks": state.get("successful_subtasks", 0) + successful,
+        "failed_subtasks": state.get("failed_subtasks", 0) + failed,
+        "total_sql_cost": state.get("total_sql_cost", 0) + additional_cost,
+    }
+
+
 def node_analyze_all(state: PipelineState) -> Dict[str, Any]:
     """
-    Nodo 3: L'orchestratore (Phase 2) sintetizza tutti i risultati.
+    Nodo 4: L'orchestratore (Phase 2) sintetizza tutti i risultati.
     """
     print("\n📊 [Orchestrator Phase 2] Sintesi dei risultati...")
     
@@ -823,13 +1115,20 @@ def node_analyze_all(state: PipelineState) -> Dict[str, Any]:
     try:
         client = OpenAI()
         
+        # Separa query iniziali da followup
+        initial_tasks = [st for st in subtasks if not st.get("is_followup")]
+        followup_tasks = [st for st in subtasks if st.get("is_followup")]
+        
         # Costruisci il prompt con tutti i risultati
         results_text = []
         results_text.append(f"DOMANDA ORIGINALE DELL'UTENTE:\n\"{state['question']}\"\n")
         results_text.append("=" * 60)
-        results_text.append(f"\nSOTTO-ANALISI ESEGUITE ({len(successful)} di {len(subtasks)} riuscite):\n")
         
-        for st in subtasks:
+        # Sezione query iniziali
+        initial_successful = [st for st in initial_tasks if st.get("error") is None and st.get("rows")]
+        results_text.append(f"\n📋 QUERY INIZIALI (decomposizione) - {len(initial_successful)} di {len(initial_tasks)} riuscite:\n")
+        
+        for st in initial_tasks:
             results_text.append(f"\n### {st['id']}. {st['aspect'].upper()}")
             results_text.append(f"Domanda: {st['question']}")
             
@@ -848,9 +1147,60 @@ def node_analyze_all(state: PipelineState) -> Dict[str, Any]:
             
             results_text.append("-" * 40)
         
+        # Sezione query di followup (se presenti)
+        if followup_tasks:
+            followup_successful = [st for st in followup_tasks if st.get("error") is None and st.get("rows")]
+            results_text.append("\n" + "=" * 60)
+            results_text.append(f"\n🔍 QUERY DI FOLLOWUP (approfondimenti) - {len(followup_successful)} di {len(followup_tasks)} riuscite:")
+            results_text.append(f"\n💭 Motivazione followup: {state.get('followup_reasoning', 'N/A')}\n")
+            
+            for st in followup_tasks:
+                results_text.append(f"\n### {st['id']}. {st['aspect'].upper()} [FOLLOWUP]")
+                results_text.append(f"Domanda di approfondimento: {st['question']}")
+                
+                if st.get("error"):
+                    results_text.append(f"❌ Errore: {st['error']}")
+                elif st.get("sql"):
+                    results_text.append(f"\nQuery SQL:\n```sql\n{st['sql']}\n```")
+                    
+                    if st.get("rows"):
+                        data_text = format_data_as_text(
+                            st["columns"], st["rows"], st["total_rows"], max_display=30
+                        )
+                        results_text.append(f"\nRisultati ({st['total_rows']} righe):\n{data_text}")
+                    else:
+                        results_text.append("\n(Nessun dato restituito)")
+                
+                results_text.append("-" * 40)
+        
         full_context = "\n".join(results_text)
         
+        followup_instruction = ""
+        if followup_tasks:
+            # Recupera la motivazione del check completeness per dare contesto
+            followup_reasoning = state.get('followup_reasoning', 'Non specificato')
+            
+            followup_instruction = f"""
+
+⚠️ IMPORTANTE - SEZIONE VALUTAZIONE FOLLOWUP (struttura obbligatoria):
+
+MOTIVAZIONE ORIGINALE per i followup: "{followup_reasoning}"
+
+Sono state eseguite {len(followup_tasks)} query di followup. La sezione DEVE seguire questa struttura:
+
+1. PROBLEMA RILEVATO: Qual era l'anomalia/lacuna/aspetto critico emerso dall'analisi iniziale?
+   (Usa la motivazione sopra come riferimento)
+
+2. STRATEGIA: Come l'orchestratore ha deciso di investigare? Quali dimensioni ha esplorato?
+
+3. RISOLUZIONE: I followup hanno risolto/chiarito il problema? Quali risposte concrete sono emerse?
+
+4. LIMITI: Ci sono stati followup senza dati o che non hanno risposto al problema?
+
+NON elencare ogni query. Scrivi un racconto logico: problema → indagine → conclusione."""
+        
         user_prompt = f"""{full_context}
+{followup_instruction}
 
 Basandoti su tutti i risultati sopra, fornisci un'analisi completa e integrata.
 Identifica pattern, anomalie, correlazioni tra i diversi aspetti, e fornisci raccomandazioni."""
@@ -895,11 +1245,12 @@ def node_finalize(state: PipelineState) -> Dict[str, Any]:
     """
     Nodo finale: Calcola costi totali.
     """
-    decompose_cost = state.get("orchestrator_decompose_cost", {}).get("total_cost", 0)
-    sql_cost = state.get("total_sql_cost", 0)
-    analyze_cost = state.get("orchestrator_analyze_cost", {}).get("total_cost", 0)
+    decompose_cost = (state.get("orchestrator_decompose_cost") or {}).get("total_cost", 0)
+    sql_cost = state.get("total_sql_cost", 0) or 0
+    check_cost = (state.get("orchestrator_check_cost") or {}).get("total_cost", 0)
+    analyze_cost = (state.get("orchestrator_analyze_cost") or {}).get("total_cost", 0)
     
-    total = decompose_cost + sql_cost + analyze_cost
+    total = decompose_cost + sql_cost + check_cost + analyze_cost
     
     return {
         "total_cost": total,
@@ -909,11 +1260,29 @@ def node_finalize(state: PipelineState) -> Dict[str, Any]:
 # ─────────────────────────────────────────────────────────────────────────────
 # BUILD GRAPH
 # ─────────────────────────────────────────────────────────────────────────────
+def should_continue_loop(state: PipelineState) -> str:
+    """
+    Determina se continuare il loop di followup o procedere all'analisi.
+    """
+    if state.get("analysis_complete", False):
+        return "analyze"
+    else:
+        return "execute_followup"
+
+
 def build_pipeline_graph() -> StateGraph:
     """
-    Costruisce il grafo LangGraph:
+    Costruisce il grafo LangGraph con ciclo di followup:
     
-    START → orchestrate → execute_subtasks → retry_failed → analyze_all → finalize → END
+    START → orchestrate → execute_subtasks → retry_failed → check_completeness
+                                                                    ↓
+                                              ┌─────────[need_more]─┴─[complete]─────┐
+                                              ↓                                       ↓
+                                      execute_followup                          analyze_all
+                                              ↓                                       ↓
+                                      check_completeness                          finalize
+                                                                                      ↓
+                                                                                     END
     """
     graph = StateGraph(PipelineState)
     
@@ -921,14 +1290,33 @@ def build_pipeline_graph() -> StateGraph:
     graph.add_node("orchestrate", node_orchestrate)
     graph.add_node("execute_subtasks", node_execute_subtasks)
     graph.add_node("retry_failed", node_retry_failed)
+    graph.add_node("check_completeness", node_check_completeness)
+    graph.add_node("execute_followup", node_execute_followup)
     graph.add_node("analyze_all", node_analyze_all)
     graph.add_node("finalize", node_finalize)
     
-    # Aggiungi gli edge (flusso lineare con retry)
+    # Flusso principale
     graph.add_edge(START, "orchestrate")
     graph.add_edge("orchestrate", "execute_subtasks")
     graph.add_edge("execute_subtasks", "retry_failed")
-    graph.add_edge("retry_failed", "analyze_all")
+    graph.add_edge("retry_failed", "check_completeness")
+    
+    # Branch condizionale dopo check_completeness
+    graph.add_conditional_edges(
+        "check_completeness",
+        should_continue_loop,
+        {
+            "execute_followup": "execute_followup",
+            "analyze": "analyze_all",
+        }
+    )
+    
+    # Loop: execute_followup → retry_failed → check_completeness
+    # (retry anche per le query di followup!)
+    graph.add_edge("execute_followup", "retry_failed")
+    graph.add_edge("retry_failed", "check_completeness")
+    
+    # Flusso finale
     graph.add_edge("analyze_all", "finalize")
     graph.add_edge("finalize", END)
     
@@ -945,17 +1333,22 @@ def run_pipeline(
     orchestrator_model: str = "gpt-4.1-mini",
     max_rows_per_query: int = 100,
     max_retries: int = 1,
+    max_followups: int = 3,
     verbose: bool = False,
 ) -> Dict[str, Any]:
     """
-    Esegue la pipeline Orchestrator-Worker-Orchestrator con Guardrails.
+    Esegue la pipeline Orchestrator-Worker-Orchestrator con Guardrails e Followup ciclico.
     
-    L'orchestratore viene usato in due fasi:
+    L'orchestratore viene usato in tre fasi:
       Phase 1: Decompone la richiesta in sotto-query
+      Phase 1.5: Verifica completezza e genera followup (max 3 cicli)
       Phase 2: Sintetizza i risultati in un'analisi integrata
     
     Guardrails: Le query fallite vengono mostrate e ritentate automaticamente
     passando l'errore come contesto per guidare la correzione.
+    
+    Followup: L'orchestratore può richiedere dati aggiuntivi per approfondire
+    anomalie o coprire aspetti mancanti (max 3 query per ciclo, max 3 cicli).
     """
     load_dotenv()
     
@@ -971,6 +1364,7 @@ def run_pipeline(
         "orchestrator_model": orchestrator_model,
         "max_rows_per_query": max_rows_per_query,
         "max_retries": max_retries,
+        "max_followups": max_followups,
         "verbose": verbose,
         "timestamp": datetime.now().isoformat(),
         # Phase 1: Decomposition
@@ -983,6 +1377,13 @@ def run_pipeline(
         "failed_subtasks": 0,
         "retried_subtasks": 0,
         "total_sql_cost": 0.0,
+        # Followup cycle
+        "current_cycle": 0,
+        "analysis_complete": False,
+        "followup_reasoning": None,
+        "total_followup_queries": 0,
+        "orchestrator_check_usage": None,
+        "orchestrator_check_cost": None,
         # Phase 2: Analysis
         "analysis": None,
         "orchestrator_analyze_usage": None,
@@ -996,10 +1397,11 @@ def run_pipeline(
     
     # Esegui il grafo
     print("\n" + "=" * 70)
-    print("🚀 ORCHESTRATOR-WORKER-ORCHESTRATOR PIPELINE - START")
+    print("🚀 ORCHESTRATOR-WORKER-ORCHESTRATOR PIPELINE (CYCLIC) - START")
     print(f"   Orchestrator Model: {orchestrator_model}")
     print(f"   SQL Model: {sql_model}")
     print(f"   Guardrails: max {max_retries} retry per errori")
+    print(f"   Followup: max {max_followups} cicli, max 3 query/ciclo")
     print("=" * 70)
     
     final_state = app.invoke(initial_state)
@@ -1027,21 +1429,48 @@ def print_result(result: Dict[str, Any], show_subtasks: bool = True, show_data: 
     
     print(f"\n📊 Sotto-analisi: {len(subtasks)} totali ({successful} ✅, {failed} ❌)")
     
-    # Info retry
+    # Info retry e followup
     retried = result.get("retried_subtasks", 0)
     if retried > 0:
         print(f"   🔄 Retry effettuati: {retried}")
     
+    followup_queries = result.get("total_followup_queries", 0)
+    cycles = result.get("current_cycle", 0)
+    if followup_queries > 0:
+        print(f"   🔍 Followup: {followup_queries} query aggiuntive in {cycles} cicli")
+        if result.get("followup_reasoning"):
+            print(f"   📝 Motivo: {result['followup_reasoning']}")
+    
     if show_subtasks:
+        # Separa query iniziali da followup
+        initial_tasks = [st for st in subtasks if not st.get("is_followup")]
+        followup_tasks = [st for st in subtasks if st.get("is_followup")]
+        
         print("-" * 40)
-        for st in subtasks:
+        print("📋 QUERY INIZIALI (decomposizione):")
+        for st in initial_tasks:
             status = "✅" if st.get("error") is None and st.get("rows") else "❌"
             error_msg = st.get("error") or "nessun dato"
             rows_info = f"{st.get('total_rows', 0)} righe" if st.get("rows") else error_msg[:50]
             print(f"  {st['id']}. [{st['aspect']}] {status} {rows_info}")
-            
+            print(f"      ❓ Domanda: {st['question']}")
             if show_data and st.get("rows"):
                 print(f"      SQL: {st['sql'][:80]}...")
+        
+        if followup_tasks:
+            print()
+            print("🔍 QUERY DI FOLLOWUP (approfondimenti orchestratore):")
+            if result.get("followup_reasoning"):
+                print(f"   💭 Motivazione: {result['followup_reasoning']}")
+            print()
+            for st in followup_tasks:
+                status = "✅" if st.get("error") is None and st.get("rows") else "❌"
+                error_msg = st.get("error") or "nessun dato"
+                rows_info = f"{st.get('total_rows', 0)} righe" if st.get("rows") else error_msg[:50]
+                print(f"  {st['id']}. [{st['aspect']}] {status} {rows_info}")
+                print(f"      ❓ Domanda: {st['question']}")
+                if show_data and st.get("rows"):
+                    print(f"      SQL: {st['sql'][:80]}...")
     
     # ═══════════════════════════════════════════════════════════════════════════
     # SEZIONE ERRORI - Query fallite per aggiungere guardrails al prompt
@@ -1106,17 +1535,20 @@ def print_result(result: Dict[str, Any], show_subtasks: bool = True, show_data: 
     # Costi
     print("\n" + "-" * 40)
     print("💰 COSTI (Orchestrator-Worker-Orchestrator):")
-    decompose_cost = result.get("orchestrator_decompose_cost", {}).get("total_cost", 0)
-    sql_cost = result.get("total_sql_cost", 0)
-    analyze_cost = result.get("orchestrator_analyze_cost", {}).get("total_cost", 0)
-    orchestrator_total = decompose_cost + analyze_cost
+    decompose_cost = (result.get("orchestrator_decompose_cost") or {}).get("total_cost", 0)
+    sql_cost = result.get("total_sql_cost", 0) or 0
+    check_cost = (result.get("orchestrator_check_cost") or {}).get("total_cost", 0)
+    analyze_cost = (result.get("orchestrator_analyze_cost") or {}).get("total_cost", 0)
+    orchestrator_total = decompose_cost + check_cost + analyze_cost
     
-    print(f"   🎯 Orchestrator Phase 1 (Decompose): ${decompose_cost:.6f}")
-    print(f"   ⚡ SQL Generator (Workers):          ${sql_cost:.6f} ({len(subtasks)} query)")
-    print(f"   📊 Orchestrator Phase 2 (Analyze):   ${analyze_cost:.6f}")
+    print(f"   🎯 Orchestrator Phase 1 (Decompose):   ${decompose_cost:.6f}")
+    print(f"   ⚡ SQL Generator (Workers):            ${sql_cost:.6f} ({len(subtasks)} query)")
+    if check_cost > 0:
+        print(f"   🔍 Orchestrator Check (Followup):      ${check_cost:.6f}")
+    print(f"   📊 Orchestrator Phase 2 (Analyze):     ${analyze_cost:.6f}")
     print(f"   ─────────────────────────────────────")
-    print(f"   Orchestrator Totale:                 ${orchestrator_total:.6f}")
-    print(f"   TOTALE PIPELINE:                     ${result.get('total_cost', 0):.6f}")
+    print(f"   Orchestrator Totale:                   ${orchestrator_total:.6f}")
+    print(f"   TOTALE PIPELINE:                       ${result.get('total_cost', 0):.6f}")
     print("=" * 80)
 
 
@@ -1156,6 +1588,10 @@ Esempi:
         help="Max tentativi di correzione per query fallite (default: 1, 0=disabilita)"
     )
     parser.add_argument(
+        "--max-followups", type=int, default=3,
+        help="Max cicli di followup per approfondimenti (default: 3, 0=disabilita)"
+    )
+    parser.add_argument(
         "--verbose", "-v", action="store_true",
         help="Output dettagliato durante l'esecuzione"
     )
@@ -1178,6 +1614,7 @@ Esempi:
         orchestrator_model=args.orchestrator_model,
         max_rows_per_query=args.max_rows,
         max_retries=args.max_retries,
+        max_followups=args.max_followups,
         verbose=args.verbose,
     )
     
